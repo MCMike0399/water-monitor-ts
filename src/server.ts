@@ -5,6 +5,13 @@ import WebSocket from 'ws';
 import path from 'path';
 import fs from 'fs';
 import { AddressInfo } from 'net';
+import { inspect } from 'util';
+
+function log(level: 'INFO'|'ERROR'|'DEBUG'|'WARN', message: string, data?: any): void {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] [${level}] ${message}`);
+  if (data) console.log(inspect(data, { depth: null, colors: true }));
+}
 
 // Define interface for data structure
 interface SensorData {
@@ -81,133 +88,188 @@ class WaterMonitorServer {
   }
 
   private setupWebSocketServer(): void {
-    // WebSocket connection handler
+    log('INFO', `WebSocket server initializing`);
+    
     this.wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
+      const clientIp = req.socket.remoteAddress;
       const extWs = ws as ExtendedWebSocket;
       extWs.isAlive = true;
       
-      // Determine client type (publisher or subscriber)
+      // Enhanced connection logging
       const isPublisher = req.headers['x-device-type'] === 'arduino-publisher';
       extWs.type = isPublisher ? ClientType.PUBLISHER : ClientType.SUBSCRIBER;
+      
+      log('INFO', `New connection from ${clientIp}`, {
+        type: extWs.type,
+        headers: req.headers,
+        url: req.url
+      });
 
       if (isPublisher) {
-        // If a publisher connects, disconnect the previous one
         if (this.publisher) {
+          log('WARN', 'Disconnecting previous publisher', {
+            wasConnectedFor: `${Date.now() - (this.publisher as any).connectedAt}ms`
+          });
           try {
             this.publisher.close(1000, 'New publisher connected');
           } catch (error) {
-            console.error('Error closing previous publisher:', error);
+            log('ERROR', 'Error closing previous publisher', error);
           }
         }
         
+        (extWs as any).connectedAt = Date.now();
         this.publisher = extWs;
-        console.log('Nuevo PUBLISHER conectado (Arduino)');
+        log('INFO', 'Publisher connected (Arduino)', { clientIp });
       } else {
         this.subscribers.push(extWs);
-        console.log(`Nuevo SUBSCRIBER conectado - Total: ${this.subscribers.length}`);
+        log('INFO', `Subscriber connected - Total: ${this.subscribers.length}`, { clientIp });
         
-        // Send latest data to new subscriber if available
         if (Object.keys(this.latestData).length > 0) {
-          extWs.send(JSON.stringify(this.latestData));
+          log('DEBUG', 'Sending latest data to new subscriber', this.latestData);
+          try {
+            extWs.send(JSON.stringify(this.latestData));
+          } catch (error) {
+            log('ERROR', 'Failed to send initial data to subscriber', error);
+          }
         }
       }
 
-      // Handle pong messages to check connection liveliness
       extWs.on('pong', () => {
+        log('DEBUG', `Received pong from client ${clientIp}`, { type: extWs.type });
         extWs.isAlive = true;
       });
 
-      // Handle incoming messages
       extWs.on('message', (message: WebSocket.Data) => {
         try {
-          const data = JSON.parse(message.toString());
-          console.log(`Datos recibidos: ${JSON.stringify(data)}`);
+          log('DEBUG', `Raw message received from ${extWs.type}`, { 
+            message: message.toString(), 
+            clientIp 
+          });
           
-          // If from publisher and has 'C' field, broadcast to all subscribers
+          const data = JSON.parse(message.toString());
+          log('INFO', `Parsed data from ${extWs.type}`, data);
+          
           if (isPublisher && 'C' in data) {
+            log('INFO', 'Valid sensor data received, broadcasting');
             this.broadcastToSubscribers(data);
-          } 
-          // Handle control messages from subscribers
-          else if (!isPublisher && data.type === 'control') {
-            // Implement control message logic if needed
+          } else if (!isPublisher && data.type === 'control') {
+            log('INFO', 'Control message received from subscriber', data);
+            // Control message logic
+          } else {
+            log('WARN', 'Received message with unexpected format', { data, clientType: extWs.type });
           }
         } catch (error) {
-          console.error(`Error: Datos no válidos: ${message}`);
+          log('ERROR', `Failed to process message: ${message}`, error);
         }
       });
 
-      // Handle WebSocket closure
-      extWs.on('close', () => {
+      extWs.on('close', (code: number, reason: string) => {
+        log('INFO', `WebSocket closed`, { 
+          clientIp, 
+          type: extWs.type, 
+          code, 
+          reason 
+        });
+        
         if (isPublisher) {
           if (this.publisher === extWs) {
             this.publisher = null;
-            console.log('Publisher desconectado');
+            log('INFO', 'Publisher disconnected', { code, reason });
           }
         } else {
           const index = this.subscribers.indexOf(extWs);
           if (index !== -1) {
             this.subscribers.splice(index, 1);
-            console.log(`Subscriber desconectado - Quedan: ${this.subscribers.length}`);
+            log('INFO', `Subscriber disconnected - Remaining: ${this.subscribers.length}`, { code, reason });
           }
         }
       });
 
-      // Handle WebSocket errors
       extWs.on('error', (error) => {
-        console.error(`Error en WebSocket: ${error.message}`);
+        log('ERROR', `WebSocket error for ${extWs.type}`, {
+          clientIp,
+          error: error.message,
+          stack: error.stack
+        });
       });
     });
 
-    // Set up ping interval to check for disconnected clients
-    setInterval(() => {
+    // Set up ping interval with better logging
+    const pingInterval = setInterval(() => {
+      log('DEBUG', `Running ping check. Active connections: ${this.wss.clients.size}`);
+      
       this.wss.clients.forEach((ws) => {
         const extWs = ws as ExtendedWebSocket;
         if (!extWs.isAlive) {
+          log('WARN', `Terminating inactive connection`, { type: extWs.type });
           return ws.terminate();
         }
         
         extWs.isAlive = false;
         try {
+          log('DEBUG', `Sending ping to ${extWs.type}`);
           extWs.ping();
         } catch (error) {
-          // Handle ping error - client might be disconnected
+          log('ERROR', `Failed to ping client`, { type: extWs.type, error });
           ws.terminate();
         }
       });
-    }, 30000); // Check every 30 seconds
+      
+      // Check for missing publisher
+      if (!this.publisher) {
+        log('DEBUG', 'No publisher connected');
+      }
+    }, 30000);
+    
+    // Clean up interval on server close
+    this.wss.on('close', () => {
+      log('INFO', 'WebSocket server closing');
+      clearInterval(pingInterval);
+    });
   }
 
   private broadcastToSubscribers(data: SensorData): void {
     this.latestData = data;
     
     if (this.subscribers.length === 0) {
-      console.log('No hay subscribers activos');
+      log('WARN', 'No active subscribers to receive data');
       return;
     }
     
-    console.log(`Enviando datos a ${this.subscribers.length} subscribers`);
+    log('INFO', `Broadcasting data to ${this.subscribers.length} subscribers`, data);
     
     const jsonData = JSON.stringify(data);
-    const subscribers = [...this.subscribers]; // Create a copy for safe iteration
+    const subscribers = [...this.subscribers];
+    let successCount = 0;
+    let failCount = 0;
     
     for (const subscriber of subscribers) {
       try {
         subscriber.send(jsonData);
+        successCount++;
       } catch (error) {
-        console.error(`Error al enviar datos: ${error}`);
-        // Remove problematic subscribers
+        failCount++;
+        log('ERROR', `Failed to send data to subscriber`, error);
+        
         const index = this.subscribers.indexOf(subscriber);
         if (index !== -1) {
           this.subscribers.splice(index, 1);
+          log('INFO', `Removed problematic subscriber - Remaining: ${this.subscribers.length}`);
         }
       }
     }
+    
+    log('INFO', `Broadcast complete: ${successCount} successful, ${failCount} failed`);
   }
 
   public start(): void {
     this.server.listen(this.port, () => {
       const address = this.server.address() as AddressInfo;
-      console.log(`Servidor iniciado en http://localhost:${address.port}`);
+      log('INFO', `Server started on port ${address.port}`, {
+        port: address.port,
+        subscribers: this.subscribers.length,
+        publisher: this.publisher ? 'connected' : 'disconnected'
+      });
     });
   }
 }
