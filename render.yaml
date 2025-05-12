@@ -1,0 +1,8 @@
+service: water-monitor-ts
+name: water-monitor-typescript
+env: node
+buildCommand: npm install && npm run build
+startCommand: npm start
+envVars:
+  - key: NODE_ENV
+    value: production
