@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
     <head>
-        <title>Monitor de Calidad de Agua</title>
+        <title>Monitor de Conductividad del Agua</title>
         <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
         <style>
             body { 
@@ -16,7 +16,7 @@
                 margin-bottom: 30px;
             }
             .container {
-                max-width: 1500px;
+                max-width: 1200px;
                 margin: 0 auto;
             }
             .status {
@@ -41,12 +41,6 @@
                 padding: 20px;
                 margin-bottom: 20px;
             }
-            .readings {
-                display: grid;
-                grid-template-columns: repeat(3, 1fr);
-                gap: 20px;
-                margin-bottom: 30px;
-            }
             .reading-card {
                 background-color: white;
                 border-radius: 8px;
@@ -54,20 +48,16 @@
                 padding: 20px;
                 text-align: center;
                 position: relative;
+                margin-bottom: 30px;
             }
             .reading-value {
-                font-size: 28px;
+                font-size: 48px;
                 font-weight: bold;
-                margin: 10px 0;
+                margin: 20px 0;
             }
             .reading-label {
                 color: #7f8c8d;
-                font-size: 16px;
-            }
-            .chart-container {
-                display: grid;
-                grid-template-columns: repeat(3, 1fr);
-                gap: 20px;
+                font-size: 18px;
             }
             .chart {
                 height: 500px;
@@ -77,95 +67,51 @@
                 padding: 20px;
                 margin-bottom: 20px;
             }
-            .alert {
-                background-color: #f8d7da;
-                color: #721c24;
-                padding: 15px;
-                border-radius: 8px;
-                margin-bottom: 20px;
-                display: none;
-                font-weight: bold;
-                border-left: 5px solid #f5c6cb;
-            }
-            .alert-warning {
-                background-color: #fff3cd;
-                color: #856404;
-                border-left: 5px solid #ffeeba;
-            }
-            .alert-danger {
-                background-color: #f8d7da;
-                color: #721c24;
-                border-left: 5px solid #f5c6cb;
+            .sensor-status {
+                font-size: 16px;
+                padding: 8px 15px;
+                border-radius: 4px;
+                margin-top: 15px;
+                display: inline-block;
             }
             .alert-success {
                 background-color: #d4edda;
                 color: #155724;
-                border-left: 5px solid #c3e6cb;
             }
             .alert-info {
                 background-color: #d1ecf1;
                 color: #0c5460;
-                border-left: 5px solid #bee5eb;
             }
-            .sensor-status {
-                font-size: 14px;
-                padding: 5px 10px;
-                border-radius: 4px;
-                margin-top: 10px;
-                display: inline-block;
+            .alert-warning {
+                background-color: #fff3cd;
+                color: #856404;
             }
-            @media (max-width: 1024px) {
-                .chart-container {
-                    grid-template-columns: 1fr;
-                }
-            }
-            @media (max-width: 768px) {
-                .readings {
-                    grid-template-columns: 1fr;
-                }
+            .alert-danger {
+                background-color: #f8d7da;
+                color: #721c24;
             }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>Monitor de Calidad de Agua</h1>
+            <h1>Monitor de Conductividad del Agua</h1>
             <div class="panel">
                 <div id="connection" class="status disconnected">Desconectado</div>
                 <div id="lastUpdate"></div>
             </div>
             
-            <div id="alertPanel" class="alert">
-                <span id="alertMessage">Alerta: Parámetro fuera de rango</span>
+            <div class="reading-card">
+                <div class="reading-label">Conductividad</div>
+                <div id="conductivity" class="reading-value">--</div>
+                <div class="reading-label">μS/cm</div>
+                <div id="conductivityStatus" class="sensor-status alert-info">Sin datos</div>
             </div>
             
-            <div class="readings">
-                <div class="reading-card">
-                    <div class="reading-label">Turbidez</div>
-                    <div id="turbidity" class="reading-value">--</div>
-                    <div class="reading-label">NTU</div>
-                    <div id="turbidityStatus" class="sensor-status alert-info">Sin datos</div>
-                </div>
-                <div class="reading-card">
-                    <div class="reading-label">pH</div>
-                    <div id="ph" class="reading-value">--</div>
-                    <div class="reading-label">Unidades pH</div>
-                    <div id="phStatus" class="sensor-status alert-info">Sin datos</div>
-                </div>
-                <div class="reading-card">
-                    <div class="reading-label">Conductividad</div>
-                    <div id="conductivity" class="reading-value">--</div>
-                    <div class="reading-label">μS/cm</div>
-                    <div id="conductivityStatus" class="sensor-status alert-info">Sin datos</div>
-                </div>
-            </div>
-            
-            <div class="chart-container">
-                <div class="chart" id="turbidityChart"></div>
-                <div class="chart" id="phChart"></div>
-                <div class="chart" id="conductivityChart"></div>
-            </div>
+            <div class="chart" id="conductivityChart"></div>
         </div>
 
-        <script src="/static/ws-client.js"></script>
+        <script>
+            // JavaScript will be added here
+        </script>
     </body>
 </html>
