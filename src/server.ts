@@ -1,279 +1,251 @@
-  // src/server.ts
-  import express from 'express';
-  import http from 'http';
-  import WebSocket from 'ws';
-  import path from 'path';
-  import fs from 'fs';
-  import { AddressInfo } from 'net';
-  import { inspect } from 'util';
+import express from "express";
+import http from "http";
+import WebSocket from "ws";
+import path from "path";
+import fs from "fs";
+import { AddressInfo } from "net";
 
-  function log(level: 'INFO'|'ERROR'|'DEBUG'|'WARN', message: string, data?: any): void {
-    const timestamp = new Date().toISOString();
-    console.log(`[${timestamp}] [${level}] ${message}`);
-    if (data) console.log(inspect(data, { depth: null, colors: true }));
-  }
+// Configure logging
+function log(level: string, message: string, data?: any): void {
+   const timestamp = new Date().toISOString();
+   console.log(`[${timestamp}] [${level}] ${message}`);
+   if (data) console.log(JSON.stringify(data, null, 2));
+}
 
-  // Define interface for data structure
-  interface SensorData {
-    C?: number;
-    PH?: number;
-    T?: number;
-    [key: string]: any;
-  }
+// Data interface
+interface SensorData {
+   C?: number;
+   PH?: number;
+   T?: number;
+   [key: string]: any;
+}
 
-  // WebSocket client types
-  enum ClientType {
-    PUBLISHER = 'publisher',
-    SUBSCRIBER = 'subscriber'
-  }
+// WebSocket connection with metadata
+interface ExtendedWebSocket extends WebSocket {
+   isAlive: boolean;
+   isPublisher: boolean;
+   id: string;
+}
 
-  // WebSocket connection with metadata
-  interface ExtendedWebSocket extends WebSocket {
-    isAlive: boolean;
-    type: ClientType;
-  }
+// Main server class
+class WaterMonitorServer {
+   private app: express.Application;
+   private server: http.Server;
+   private wss: WebSocket.Server;
+   private subscribers: ExtendedWebSocket[] = [];
+   private publisher: ExtendedWebSocket | null = null;
+   private latestData: SensorData = {};
+   private port: number;
 
-  // Main application class
-  class WaterMonitorServer {
-    private app: express.Application;
-    private server: http.Server;
-    private wss: WebSocket.Server;
-    private subscribers: ExtendedWebSocket[] = [];
-    private publisher: ExtendedWebSocket | null = null;
-    private latestData: SensorData = {};
-    private port: number;
-
-    constructor() {
-      this.port = parseInt(process.env.PORT || '8081', 10);
+   constructor() {
+      this.port = parseInt(process.env.PORT || "10000", 10);
       this.app = express();
       this.server = http.createServer(this.app);
       this.wss = new WebSocket.Server({ server: this.server });
-      
+
       this.setupExpress();
       this.setupWebSocketServer();
-    }
+   }
 
-    private setupExpress(): void {
+   private setupExpress(): void {
       // CORS middleware
       this.app.use((req, res, next) => {
-        res.header('Access-Control-Allow-Origin', '*');
-        res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-        next();
+         res.header("Access-Control-Allow-Origin", "*");
+         res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+         next();
       });
 
-      // Serve static files if directory exists
-      const staticPath = path.join(process.cwd(), 'static');
+      // Serve static files
+      const staticPath = path.join(__dirname, "../static");
       if (fs.existsSync(staticPath)) {
-        this.app.use('/static', express.static(staticPath));
+         this.app.use("/static", express.static(staticPath));
       }
 
-      // Root endpoint
-      this.app.get('/', (req, res) => {
-        const htmlPath = path.join(process.cwd(), 'static', 'ws-client.html');
-        if (fs.existsSync(htmlPath)) {
-          res.sendFile(htmlPath);
-        } else {
-          res.json({ message: 'Monitor de Calidad de Agua API' });
-        }
+      // Root endpoint - serve HTML client
+      this.app.get("/", (req, res) => {
+         const htmlPath = path.join(__dirname, "../static/index.html");
+         if (fs.existsSync(htmlPath)) {
+            res.sendFile(htmlPath);
+         } else {
+            res.send("<h1>Water Quality Monitor API</h1><p>WebSocket server is running.</p>");
+         }
       });
 
-      // Health check endpoint
-      this.app.get('/health', (req, res) => {
-        res.json({
-          status: 'healthy',
-          subscribers: this.subscribers.length,
-          publisher: this.publisher ? 'connected' : 'disconnected'
-        });
+      // Health check endpoint for Render
+      this.app.get("/health", (req, res) => {
+         res.json({
+            status: "healthy",
+            subscribers: this.subscribers.length,
+            publisher: this.publisher ? "connected" : "disconnected",
+         });
       });
-    }
+   }
 
-    private setupWebSocketServer(): void {
-      log('INFO', `WebSocket server initializing`);
-      
-      this.wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
-        const clientIp = req.socket.remoteAddress;
-        const extWs = ws as ExtendedWebSocket;
-        extWs.isAlive = true;
-        
-        // Enhanced connection logging
-        const isPublisher = req.headers['x-device-type'] === 'arduino-publisher';
-        extWs.type = isPublisher ? ClientType.PUBLISHER : ClientType.SUBSCRIBER;
-        
-        log('INFO', `New connection from ${clientIp}`, {
-          type: extWs.type,
-          headers: req.headers,
-          url: req.url
-        });
+   private setupWebSocketServer(): void {
+      log("INFO", "WebSocket server initializing");
 
-        if (isPublisher) {
-          if (this.publisher) {
-            log('WARN', 'Disconnecting previous publisher', {
-              wasConnectedFor: `${Date.now() - (this.publisher as any).connectedAt}ms`
-            });
+      this.wss.on("connection", (ws: WebSocket, req: http.IncomingMessage) => {
+         const extWs = ws as ExtendedWebSocket;
+         extWs.isAlive = true;
+         extWs.isPublisher = false;
+         extWs.id = this.generateId();
+
+         const clientIp = req.socket.remoteAddress || "unknown";
+         log("INFO", `New WebSocket connection from ${clientIp}`, { id: extWs.id });
+
+         // Handle incoming messages
+         extWs.on("message", (message: WebSocket.Data) => {
             try {
-              this.publisher.close(1000, 'New publisher connected');
-            } catch (error) {
-              log('ERROR', 'Error closing previous publisher', error);
-            }
-          }
-          
-          (extWs as any).connectedAt = Date.now();
-          this.publisher = extWs;
-          log('INFO', 'Publisher connected (Arduino)', { clientIp });
-        } else {
-          this.subscribers.push(extWs);
-          log('INFO', `Subscriber connected - Total: ${this.subscribers.length}`, { clientIp });
-          
-          if (Object.keys(this.latestData).length > 0) {
-            log('DEBUG', 'Sending latest data to new subscriber', this.latestData);
-            try {
-              extWs.send(JSON.stringify(this.latestData));
-            } catch (error) {
-              log('ERROR', 'Failed to send initial data to subscriber', error);
-            }
-          }
-        }
+               const msgStr = message.toString();
+               log("DEBUG", `Received message: ${msgStr}`);
 
-        extWs.on('pong', () => {
-          log('DEBUG', `Received pong from client ${clientIp}`, { type: extWs.type });
-          extWs.isAlive = true;
-        });
+               // Parse as JSON
+               try {
+                  const data = JSON.parse(msgStr);
 
-        extWs.on('message', (message: WebSocket.Data) => {
-          try {
-            log('DEBUG', `Raw message received from ${extWs.type}`, { 
-              message: message.toString(), 
-              clientIp 
-            });
-            
-            const data = JSON.parse(message.toString());
-            log('INFO', `Parsed data from ${extWs.type}`, data);
-            
-            if (isPublisher && 'C' in data) {
-              log('INFO', 'Valid sensor data received, broadcasting');
-              this.broadcastToSubscribers(data);
-            } else if (!isPublisher && data.type === 'control') {
-              log('INFO', 'Control message received from subscriber', data);
-              // Control message logic
+                  // Handle registration message
+                  if (data.type === "register") {
+                     this.handleRegistration(extWs, data.role, clientIp);
+                     return;
+                  }
+
+                  // Handle sensor data from publisher
+                  if (extWs.isPublisher && data.C !== undefined) {
+                     log("INFO", "Received sensor data from publisher", data);
+                     this.latestData = data;
+                     this.broadcastToSubscribers(data);
+                     return;
+                  }
+
+                  log("WARN", "Unhandled message type", { data });
+               } catch (e) {
+                  // Handle ping message (simple string)
+                  if (msgStr === "ping") {
+                     extWs.send("pong");
+                     return;
+                  }
+
+                  log("ERROR", "Failed to parse message as JSON", { error: (e as Error).message, raw: msgStr });
+               }
+            } catch (error) {
+               log("ERROR", "Error handling message", { error: (error as Error).message });
+            }
+         });
+
+         // Handle connection close
+         extWs.on("close", () => {
+            if (extWs.isPublisher && this.publisher === extWs) {
+               log("INFO", "Publisher disconnected");
+               this.publisher = null;
             } else {
-              log('WARN', 'Received message with unexpected format', { data, clientType: extWs.type });
+               this.subscribers = this.subscribers.filter((sub) => sub !== extWs);
+               log("INFO", `Subscriber disconnected, remaining: ${this.subscribers.length}`);
             }
-          } catch (error) {
-            log('ERROR', `Failed to process message: ${message}`, error);
-          }
-        });
+         });
 
-        extWs.on('close', (code: number, reason: string) => {
-          log('INFO', `WebSocket closed`, { 
-            clientIp, 
-            type: extWs.type, 
-            code, 
-            reason 
-          });
-          
-          if (isPublisher) {
-            if (this.publisher === extWs) {
-              this.publisher = null;
-              log('INFO', 'Publisher disconnected', { code, reason });
-            }
-          } else {
-            const index = this.subscribers.indexOf(extWs);
-            if (index !== -1) {
-              this.subscribers.splice(index, 1);
-              log('INFO', `Subscriber disconnected - Remaining: ${this.subscribers.length}`, { code, reason });
-            }
-          }
-        });
+         // Handle errors
+         extWs.on("error", (err) => {
+            log("ERROR", "WebSocket error", { id: extWs.id, error: err.message });
+         });
 
-        extWs.on('error', (error) => {
-          log('ERROR', `WebSocket error for ${extWs.type}`, {
-            clientIp,
-            error: error.message,
-            stack: error.stack
-          });
-        });
+         // Send initial ping to verify connection
+         extWs.send("connected");
       });
 
-      // Set up ping interval with better logging
-      const pingInterval = setInterval(() => {
-        log('DEBUG', `Running ping check. Active connections: ${this.wss.clients.size}`);
-        
-        this.wss.clients.forEach((ws) => {
-          const extWs = ws as ExtendedWebSocket;
-          if (!extWs.isAlive) {
-            log('WARN', `Terminating inactive connection`, { type: extWs.type });
-            return ws.terminate();
-          }
-          
-          extWs.isAlive = false;
-          try {
-            log('DEBUG', `Sending ping to ${extWs.type}`);
-            extWs.ping();
-          } catch (error) {
-            log('ERROR', `Failed to ping client`, { type: extWs.type, error });
-            ws.terminate();
-          }
-        });
-        
-        // Check for missing publisher
-        if (!this.publisher) {
-          log('DEBUG', 'No publisher connected');
-        }
+      // Setup ping interval to keep connections alive
+      setInterval(() => {
+         this.wss.clients.forEach((ws) => {
+            const extWs = ws as ExtendedWebSocket;
+
+            if (!extWs.isAlive) {
+               log("WARN", "Terminating inactive connection", { id: extWs.id });
+               return ws.terminate();
+            }
+
+            extWs.isAlive = false;
+            try {
+               extWs.send("ping");
+            } catch (e) {
+               log("ERROR", "Failed to ping client", { id: extWs.id, error: (e as Error).message });
+               ws.terminate();
+            }
+         });
       }, 30000);
-      
-      // Clean up interval on server close
-      this.wss.on('close', () => {
-        log('INFO', 'WebSocket server closing');
-        clearInterval(pingInterval);
-      });
-    }
+   }
 
-    private broadcastToSubscribers(data: SensorData): void {
-      this.latestData = data;
-      
+   private handleRegistration(ws: ExtendedWebSocket, role: string, clientIp: string): void {
+      if (role === "publisher") {
+         // If there's an existing publisher, disconnect it
+         if (this.publisher) {
+            log("WARN", "Replacing existing publisher", { oldId: this.publisher.id, newId: ws.id });
+            try {
+               this.publisher.send(JSON.stringify({ type: "disconnect", reason: "new-publisher" }));
+            } catch (e) {
+               log("ERROR", "Error notifying old publisher", { error: (e as Error).message });
+            }
+         }
+
+         ws.isPublisher = true;
+         this.publisher = ws;
+         log("INFO", "Publisher registered", { id: ws.id, ip: clientIp });
+
+         // Confirm registration
+         ws.send(JSON.stringify({ type: "registered", role: "publisher" }));
+      } else {
+         // Register as subscriber
+         this.subscribers.push(ws);
+         log("INFO", `Subscriber registered, total: ${this.subscribers.length}`, { id: ws.id, ip: clientIp });
+
+         // Confirm registration
+         ws.send(JSON.stringify({ type: "registered", role: "subscriber" }));
+
+         // Send latest data if available
+         if (Object.keys(this.latestData).length > 0) {
+            ws.send(JSON.stringify({ type: "data", ...this.latestData }));
+         }
+      }
+   }
+
+   private broadcastToSubscribers(data: SensorData): void {
       if (this.subscribers.length === 0) {
-        log('WARN', 'No active subscribers to receive data');
-        return;
+         log("WARN", "No subscribers to broadcast to");
+         return;
       }
-      
-      log('INFO', `Broadcasting data to ${this.subscribers.length} subscribers`, data);
-      
-      const jsonData = JSON.stringify(data);
-      const subscribers = [...this.subscribers];
-      let successCount = 0;
-      let failCount = 0;
-      
-      for (const subscriber of subscribers) {
-        try {
-          subscriber.send(jsonData);
-          successCount++;
-        } catch (error) {
-          failCount++;
-          log('ERROR', `Failed to send data to subscriber`, error);
-          
-          const index = this.subscribers.indexOf(subscriber);
-          if (index !== -1) {
-            this.subscribers.splice(index, 1);
-            log('INFO', `Removed problematic subscriber - Remaining: ${this.subscribers.length}`);
-          }
-        }
-      }
-      
-      log('INFO', `Broadcast complete: ${successCount} successful, ${failCount} failed`);
-    }
 
-    public start(): void {
-      this.server.listen(this.port, () => {
-        const address = this.server.address() as AddressInfo;
-        log('INFO', `Server started on port ${address.port}`, {
-          port: address.port,
-          subscribers: this.subscribers.length,
-          publisher: this.publisher ? 'connected' : 'disconnected'
-        });
+      log("INFO", `Broadcasting to ${this.subscribers.length} subscribers`, data);
+
+      const message = JSON.stringify({ type: "data", ...data });
+      let failedCount = 0;
+
+      this.subscribers.forEach((client) => {
+         try {
+            client.send(message);
+         } catch (e) {
+            failedCount++;
+            log("ERROR", "Failed to send to subscriber", { id: client.id, error: (e as Error).message });
+         }
       });
-    }
-  }
 
-  // Start the server
-  const server = new WaterMonitorServer();
-  server.start();
+      // Clean up failed connections
+      this.subscribers = this.subscribers.filter((sub) => sub.readyState === WebSocket.OPEN);
+
+      if (failedCount > 0) {
+         log("WARN", `Failed to send to ${failedCount} subscribers, cleaned up connections`);
+      }
+   }
+
+   private generateId(): string {
+      return Math.random().toString(36).substring(2, 15);
+   }
+
+   public start(): void {
+      this.server.listen(this.port, () => {
+         const address = this.server.address() as AddressInfo;
+         log("INFO", `Server started on port ${address.port}`);
+      });
+   }
+}
+
+// Start server
+const server = new WaterMonitorServer();
+server.start();
