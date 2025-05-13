@@ -1,8 +1,12 @@
-service: water-monitor-ts
-name: water-monitor-typescript
-env: node
-buildCommand: npm install && npm run build
-startCommand: npm start
-envVars:
-  - key: NODE_ENV
-    value: production
+services:
+  - type: web
+    name: water-monitor-ws
+    env: node
+    buildCommand: bash ./build.sh
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: NODE_ENV
+        value: production
+    healthCheckPath: /health

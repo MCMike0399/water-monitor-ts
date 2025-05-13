@@ -1,5 +1,5 @@
 {
-  "name": "water-monitor-ts",
+  "name": "water-monitor-ws",
   "version": "1.0.0",
   "description": "Water quality monitoring WebSocket server",
   "main": "dist/server.js",
